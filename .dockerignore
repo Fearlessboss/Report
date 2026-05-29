@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.git
+.gitignore
+*.session
+*.session-journal
+sudo_users.json
+data/
+README.md
+.vscode/
+.idea/

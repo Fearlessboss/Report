@@ -52,7 +52,7 @@ from telethon.tl.types import Channel, MessageMediaPhoto, MessageMediaDocument
 # ══════════════════════════════════════════════════════════
 # CONFIGURATION
 # ══════════════════════════════════════════════════════════
-OWNER_ID     = 7661825494
+OWNER_ID     = 6980326908
 BOT_TOKEN    = "8763146794:AAFDAan4KSfIhR6KzLR8PV6G-fuLQSXWvOs"
 API_ID       = 33628258
 API_HASH     = "0850762925b9c1715b9b122f7b753128"
@@ -60,7 +60,7 @@ SESSION_FILE = "userbot_session"
 SUDO_FILE    = "sudo_users.json"
 
 API_KEYS = [
-    "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",   # 👈 groq key yahan paste karo (console.groq.com)
+    "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",   # 👈 groq key yahan paste karo (console.groq.com)
 ]
 OPENROUTER_URL = "https://api.groq.com/openai/v1/chat/completions"  # Groq endpoint
 

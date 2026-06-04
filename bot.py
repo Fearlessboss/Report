@@ -59,9 +59,19 @@ API_HASH     = "0850762925b9c1715b9b122f7b753128"
 SESSION_FILE = "userbot_session"
 SUDO_FILE    = "sudo_users.json"
 
-API_KEYS = [
-    "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",   # 👈 groq key yahan paste karo (console.groq.com)
-]
+# ══════════════════════════════════════════════════════════
+# API KEYS (Environment Variable से लोड होगा)
+# ══════════════════════════════════════════════════════════
+
+import os
+
+# Groq API Key (Security के लिए env variable से लो)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+if not GROQ_API_KEY:
+    logger.warning("⚠️ GROQ_API_KEY environment variable not set!")
+
+API_KEYS = [GROQ_API_KEY] if GROQ_API_KEY else []
 OPENROUTER_URL = "https://api.groq.com/openai/v1/chat/completions"  # Groq endpoint
 
 # Groq free models (blazing fast, no credit card needed)

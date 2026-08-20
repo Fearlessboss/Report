@@ -65,7 +65,7 @@ SUDO_FILE    = "sudo_users.json"
 
 import os
 
-# Groq API Key (Security के लिए env variable से लो)
+# Groq API Key (Security ke liye environment variable se lo)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 if not GROQ_API_KEY:
@@ -73,9 +73,11 @@ if not GROQ_API_KEY:
 
 API_KEYS = [GROQ_API_KEY] if GROQ_API_KEY else []
 
+# Groq API endpoint
 OPENROUTER_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-MODEL = "llama-3.3-70b-versatile"
+# Groq models
+MODEL = "openai/gpt-oss-20b"
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 MAX_IMAGES = 5

@@ -72,12 +72,13 @@ if not GROQ_API_KEY:
     logger.warning("⚠️ GROQ_API_KEY environment variable not set!")
 
 API_KEYS = [GROQ_API_KEY] if GROQ_API_KEY else []
-OPENROUTER_URL = "https://api.groq.com/openai/v1/chat/completions"  # Groq endpoint
 
-# Groq free models (blazing fast, no credit card needed)
-MODEL        = "llama-3.1-8b-instant"            # text analysis
-VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"  # vision model (current)
-MAX_IMAGES   = 5   # Max photos to analyze per channel scan
+OPENROUTER_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+MODEL = "llama-3.3-70b-versatile"
+VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
+MAX_IMAGES = 5
 
 # ══════════════════════════════════════════════════════════
 # TELEGRAM REPORT CATEGORY TREE  (Accurate as of 2024-25)

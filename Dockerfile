@@ -1,5 +1,5 @@
 # ╔══════════════════════════════════════════════════════╗
-# ║              TELEGRAM BOT — Dockerfile              ║
+# ║          TELEGRAM BOT — FIXED DOCKERFILE             ║
 # ╚══════════════════════════════════════════════════════╝
 
 FROM python:3.11-slim
@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     ca-certificates \
     curl \
+    procps \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
     && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
@@ -34,24 +35,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # ───────────────────────────────────────────────
-# Copy requirements first
+# Requirements
 # ───────────────────────────────────────────────
 COPY requirements.txt .
 
 # ───────────────────────────────────────────────
-# Install Python dependencies
+# Install dependencies
 # ───────────────────────────────────────────────
 RUN pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt && \
-    pip install aiohttp
+    pip install --upgrade "python-telegram-bot[job-queue]" && \
+    pip install --upgrade aiohttp
 
 # ───────────────────────────────────────────────
-# Copy source code
+# Copy bot source
 # ───────────────────────────────────────────────
 COPY . .
 
 # ───────────────────────────────────────────────
-# Create persistent data directory
+# Persistent data
 # ───────────────────────────────────────────────
 RUN mkdir -p /app/data
 
@@ -68,8 +70,11 @@ USER botuser
 # ───────────────────────────────────────────────
 # Healthcheck
 # ───────────────────────────────────────────────
-HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-CMD pgrep -f "python" > /dev/null || exit 1
+HEALTHCHECK --interval=60s \
+    --timeout=10s \
+    --start-period=30s \
+    --retries=3 \
+    CMD pgrep -f "python" > /dev/null || exit 1
 
 # ───────────────────────────────────────────────
 # Start bot

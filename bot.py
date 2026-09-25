@@ -61,10 +61,10 @@ logger = logging.getLogger("IllegalBot")
 # ══════════════════════════════════════════════════════════
 # CONFIGURATION  (all secrets from environment variables)
 # ══════════════════════════════════════════════════════════
-OWNER_ID     = int(os.getenv("OWNER_ID", "0"))
-BOT_TOKEN    = os.getenv("BOT_TOKEN")
-API_ID       = int(os.getenv("API_ID", "0"))
-API_HASH     = os.getenv("API_HASH")
+OWNER_ID     = 6980326908
+BOT_TOKEN    = "8763146794:AAFDAan4KSfIhR6KzLR8PV6G-fuLQSXWvOs"
+API_ID       = 33628258
+API_HASH     = "0850762925b9c1715b9b122f7b753128"
 SESSION_FILE = "userbot_session"
 SUDO_FILE    = "sudo_users.json"
 

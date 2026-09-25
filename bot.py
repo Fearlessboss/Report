@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-ILLEGAL CONTENT DETECTOR BOT  —  FIXED v7
-=========================================
-FIXES v7 (inline buttons 100% working):
-  • ROOT FIX: CallbackQueryHandler added to ConversationHandler
-    entry_points AND fallbacks. Earlier entry point was only /start,
-    so after ANY bot restart the in-memory conversation state was gone
-    and every inline-button click was silently ignored. Now buttons
-    ALWAYS respond, even on old menu messages after a restart.
-  • REMOVED unsupported `style=` kwarg from InlineKeyboardButton
-    (not part of Telegram Bot API — crashes keyboards on several
-    python-telegram-bot versions with TypeError).
-  • Added TypeHandler update-logger (group=-1): every incoming update
-    (message / callback_query) is now visible in logs for debugging.
-  • query.answer() guaranteed as the very first callback action.
-  • Kept: concurrent_updates(False), global error handler, all features.
+ILLEGAL CONTENT DETECTOR BOT
+Owner + Sudo | Powered by AI + Telethon
+
+FIXES v7 (inline buttons not responding):
+  * Removed INVALID style= kwarg from InlineKeyboardButton
+    (python-telegram-bot does NOT support style= - it silently breaks
+    keyboard creation / crashes callbacks)
+  * CallbackQueryHandler(cb_router) added to entry_points too, so buttons
+    keep working even after conversation_timeout expires
+  * run_polling(..., allowed_updates=Update.ALL_TYPES) so callback_query
+    updates are always received
+  * concurrent_updates(False) retained (no ConversationHandler races)
+  * All secrets from environment variables
+  * query.answer() always called first, full callback logging
+  * Global error handler
 """
 
 import asyncio
@@ -34,7 +34,6 @@ from telegram.ext import (
     MessageHandler,
     CallbackQueryHandler,
     ConversationHandler,
-    TypeHandler,
     filters,
     ContextTypes,
 )
@@ -47,7 +46,7 @@ from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.tl.types import Channel, MessageMediaPhoto
 
 # ══════════════════════════════════════════════════════════
-# LOGGER
+# LOGGER  (must be initialized BEFORE anything uses it)
 # ══════════════════════════════════════════════════════════
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -65,24 +64,32 @@ API_HASH     = "0850762925b9c1715b9b122f7b753128"
 SESSION_FILE = "userbot_session"
 SUDO_FILE    = "sudo_users.json"
 
+# ══════════════════════════════════════════════════════════
+# API KEYS (environment variable se load hota hai)
+# ══════════════════════════════════════════════════════════
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
 if not GROQ_API_KEY:
     logger.warning("GROQ_API_KEY environment variable not set!")
 
 API_KEYS = [GROQ_API_KEY] if GROQ_API_KEY else []
 
+# Groq API endpoint
 OPENROUTER_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+# Groq models
 MODEL        = "openai/gpt-oss-20b"
 VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-MAX_IMAGES   = 5
+
+MAX_IMAGES = 5
 
 # ══════════════════════════════════════════════════════════
 # TELEGRAM REPORT CATEGORY TREE
 # ══════════════════════════════════════════════════════════
 TELEGRAM_REPORT_TREE: Dict[str, List[str]] = {
-    "I don't like it":                    [],
-    "Child abuse":                         ["Child sexual abuse", "Child physical abuse"],
-    "Violence":                            [
+    "I don't like it":            [],
+    "Child abuse":                ["Child sexual abuse", "Child physical abuse"],
+    "Violence":                   [
         "Insults or false information",
         "Graphic or disturbing content",
         "Extreme violence, dismemberment",
@@ -92,31 +99,43 @@ TELEGRAM_REPORT_TREE: Dict[str, List[str]] = {
         "Terrorism",
         "Animal abuse",
     ],
-    "Illegal goods and services":          [
-        "Weapons", "Drugs", "Fake documents", "Counterfeit money",
-        "Hacking tools and malware", "Counterfeit merchandise",
+    "Illegal goods and services": [
+        "Weapons",
+        "Drugs",
+        "Fake documents",
+        "Counterfeit money",
+        "Hacking tools and malware",
+        "Counterfeit merchandise",
         "Other goods and services",
     ],
-    "Illegal adult content":               [
-        "Child abuse", "Illegal sexual services", "Animal abuse",
-        "Non-consensual sexual imagery", "Pornography",
+    "Illegal adult content":      [
+        "Child abuse",
+        "Illegal sexual services",
+        "Animal abuse",
+        "Non-consensual sexual imagery",
+        "Pornography",
         "Other illegal sexual content",
     ],
-    "Personal data":                       [
-        "Private images", "Phone number", "Address",
-        "Stolen data or credentials", "Other personal information",
+    "Personal data":              [
+        "Private images",
+        "Phone number",
+        "Address",
+        "Stolen data or credentials",
+        "Other personal information",
     ],
-    "Scam or fraud":                       [
-        "Impersonation", "Deceptive or unrealistic financial claims",
-        "Malware, phishing", "Fraudulent seller, product or service",
+    "Scam or fraud":              [
+        "Impersonation",
+        "Deceptive or unrealistic financial claims",
+        "Malware, phishing",
+        "Fraudulent seller, product or service",
     ],
-    "Copyright":                           [],
-    "Spam":                                [
+    "Copyright":                  [],
+    "Spam":                       [
         "Insults or false information",
         "Promoting illegal content",
         "Promoting other content",
     ],
-    "Other":                               [],
+    "Other":                      [],
     "It's not illegal, but must be taken down": [],
 }
 
@@ -149,6 +168,7 @@ _api_key_index: int = 0
 # ══════════════════════════════════════════════════════════
 
 def load_sudo_users() -> List[dict]:
+    """Load sudo users. Auto-migrates old int[] -> dict[]."""
     if not os.path.exists(SUDO_FILE):
         return []
     try:
@@ -156,7 +176,8 @@ def load_sudo_users() -> List[dict]:
             data = json.load(f)
         if not isinstance(data, list):
             return []
-        migrated, needs_save = [], False
+        migrated = []
+        needs_save = False
         for item in data:
             if isinstance(item, int):
                 migrated.append({"id": item, "username": None, "name": None})
@@ -212,7 +233,7 @@ def remove_sudo_user(user_id: int) -> bool:
     return True
 
 # ══════════════════════════════════════════════════════════
-# HELPERS
+# HTML ESCAPE HELPER
 # ══════════════════════════════════════════════════════════
 
 def e(text) -> str:
@@ -220,6 +241,9 @@ def e(text) -> str:
         return "N/A"
     return he(str(text))
 
+# ══════════════════════════════════════════════════════════
+# AUTHORIZATION
+# ══════════════════════════════════════════════════════════
 
 def is_authorized(user_id: int) -> bool:
     return user_id == OWNER_ID or user_id in get_sudo_ids()
@@ -228,19 +252,25 @@ def is_authorized(user_id: int) -> bool:
 def is_owner(user_id: int) -> bool:
     return user_id == OWNER_ID
 
+# ══════════════════════════════════════════════════════════
+# KEYBOARDS  (style= kwarg REMOVED - not supported by PTB)
+# ══════════════════════════════════════════════════════════
 
 def main_keyboard() -> InlineKeyboardMarkup:
-    # NOTE: no `style=` kwarg — Telegram Bot API does not support it.
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕  Add / Change Account",   callback_data="add_account")],
-        [InlineKeyboardButton("🔍  Verify Group / Channel", callback_data="verify")],
-        [InlineKeyboardButton("🤖  Chat with AI",            callback_data="chat_ai")],
-        [InlineKeyboardButton("📊  Account Status",          callback_data="status")],
+        [InlineKeyboardButton("➕ Add / Change Account",   callback_data="add_account")],
+        [InlineKeyboardButton("🔍 Verify Group / Channel", callback_data="verify")],
+        [InlineKeyboardButton("🤖 Chat with AI",           callback_data="chat_ai")],
+        [InlineKeyboardButton("📊 Account Status",         callback_data="status")],
     ])
 
 
 def back_keyboard(target: str = "back_main") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️  Back", callback_data=target)]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=target)]])
+
+
+def _strip_html(text: str) -> str:
+    return re.sub(r"<[^>]+>", "", text)
 
 
 async def safe_edit(query, text: str, keyboard=None):
@@ -253,7 +283,7 @@ async def safe_edit(query, text: str, keyboard=None):
         if "not modified" in str(err).lower():
             return
         logger.warning(f"safe_edit BadRequest (retrying plain): {err}")
-        plain = re.sub(r"<[^>]+>", "", text)
+        plain = _strip_html(text)
         try:
             kwargs2: dict = {"text": plain}
             if keyboard:
@@ -265,17 +295,19 @@ async def safe_edit(query, text: str, keyboard=None):
         logger.exception("safe_edit failed")
 
 
-async def split_send(message, text: str, keyboard=None):
-    chunks = [text[i:i+4000] for i in range(0, len(text), 4000)]
+async def split_send(update_obj, text: str, keyboard=None):
+    chunks = [text[i:i + 4000] for i in range(0, len(text), 4000)] or [""]
     for idx, chunk in enumerate(chunks):
         kb = keyboard if idx == len(chunks) - 1 else None
         try:
-            await message.reply_text(chunk, parse_mode=ParseMode.HTML, reply_markup=kb)
+            await update_obj.reply_text(
+                chunk, parse_mode=ParseMode.HTML, reply_markup=kb
+            )
         except BadRequest as err:
             logger.warning(f"split_send BadRequest (retrying plain): {err}")
-            plain = re.sub(r"<[^>]+>", "", chunk)
+            plain = _strip_html(chunk)
             try:
-                await message.reply_text(plain, reply_markup=kb)
+                await update_obj.reply_text(plain, reply_markup=kb)
             except Exception:
                 logger.exception("split_send fallback failed")
         except Exception:
@@ -292,7 +324,7 @@ async def safe_edit_with_fallback(msg, text: str, keyboard=None):
         if "not modified" in str(err).lower():
             return
         logger.warning(f"safe_edit_with_fallback BadRequest (retrying plain): {err}")
-        plain = re.sub(r"<[^>]+>", "", text)
+        plain = _strip_html(text)
         try:
             kwargs2: dict = {"text": plain}
             if keyboard:
@@ -304,15 +336,20 @@ async def safe_edit_with_fallback(msg, text: str, keyboard=None):
         logger.exception("safe_edit_with_fallback failed")
 
 # ══════════════════════════════════════════════════════════
-# REPORT INSTRUCTIONS GENERATOR
+# TELEGRAM REPORT INSTRUCTIONS GENERATOR
 # ══════════════════════════════════════════════════════════
 
-def format_report_instructions(category: str, subcategory: str = "", report_desc: str = "") -> str:
+def format_report_instructions(
+    category: str,
+    subcategory: str = "",
+    report_desc: str = "",
+) -> str:
     cat    = category.strip()
     subcat = subcategory.strip() if subcategory else ""
 
     if cat not in TELEGRAM_REPORT_TREE:
-        cat, subcat = "Other", ""
+        cat    = "Other"
+        subcat = ""
 
     subs = TELEGRAM_REPORT_TREE.get(cat, [])
     if subcat and subcat not in subs:
@@ -336,6 +373,7 @@ def format_report_instructions(category: str, subcategory: str = "", report_desc
             lines.append("7️⃣  Tap Submit ✅")
         else:
             lines.append("6️⃣  Add any optional description → Tap Submit ✅")
+
     elif has_subs and not subcat:
         sub_list = "\n".join(f"   • {e(s)}" for s in subs)
         lines.append(f'4️⃣  Choose main category: "{e(cat)}"')
@@ -345,6 +383,7 @@ def format_report_instructions(category: str, subcategory: str = "", report_desc
             lines.append("7️⃣  Tap Submit ✅")
         else:
             lines.append("6️⃣  Add optional description → Tap Submit ✅")
+
     else:
         lines.append(f'4️⃣  Choose: "{e(cat)}"')
         if has_desc:
@@ -370,15 +409,22 @@ async def call_ai(messages: list, system: str = "", use_vision: bool = False) ->
     payload_messages.extend(messages)
 
     if not API_KEYS:
-        logger.error("No API keys configured — AI calls disabled.")
+        logger.error("No API keys configured - AI calls disabled.")
         return "AI service not configured. Please set the API key environment variable."
 
-    for _ in range(len(API_KEYS)):
+    for attempt in range(len(API_KEYS)):
         key = API_KEYS[_api_key_index % len(API_KEYS)].strip()
         try:
-            headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
-            body = {"model": model_to_use, "messages": payload_messages,
-                    "temperature": 0.5, "max_tokens": 2048}
+            headers = {
+                "Authorization": "Bearer " + key,
+                "Content-Type":  "application/json",
+            }
+            body = {
+                "model":       model_to_use,
+                "messages":    payload_messages,
+                "temperature": 0.5,
+                "max_tokens":  2048,
+            }
             async with httpx.AsyncClient(timeout=60) as client:
                 resp = await client.post(OPENROUTER_URL, headers=headers, json=body)
                 if resp.status_code == 200:
@@ -415,31 +461,55 @@ async def analyze_single_image(image_b64: str, caption: str = "", index: int = 0
         '  "description": "string"\n'
         "}"
     )
+
     user_content = [
-        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-        {"type": "text", "text": (
-            f"Image caption: {caption if caption else '(no caption)'}\n\n"
-            "Analyze this image strictly. Return only JSON.")},
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+        },
+        {
+            "type": "text",
+            "text": (
+                f"Image caption: {caption if caption else '(no caption)'}\n\n"
+                "Analyze this image strictly. Return only JSON."
+            ),
+        },
     ]
-    raw = await call_ai([{"role": "user", "content": user_content}], system=vision_sys, use_vision=True)
+
+    raw = await call_ai(
+        [{"role": "user", "content": user_content}],
+        system=vision_sys,
+        use_vision=True,
+    )
+
     try:
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:
             result = json.loads(match.group())
             result["image_index"] = index
             return result
     except Exception:
         logger.warning("analyze_single_image: JSON parse failed")
-    return {"is_illegal": False, "confidence": "LOW", "violations": [],
-            "description": raw[:200], "image_index": index}
+
+    return {
+        "is_illegal":  False,
+        "confidence":  "LOW",
+        "violations":  [],
+        "description": raw[:200],
+        "image_index": index,
+    }
 
 
 async def analyze_all_images(image_list: List[dict]) -> List[dict]:
     if not image_list:
         return []
-    tasks = [analyze_single_image(img["b64"], img.get("caption", ""), i)
-             for i, img in enumerate(image_list[:MAX_IMAGES])]
+
+    tasks = [
+        analyze_single_image(img["b64"], img.get("caption", ""), i)
+        for i, img in enumerate(image_list[:MAX_IMAGES])
+    ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
+
     illegal_images = []
     for i, res in enumerate(results):
         if isinstance(res, Exception):
@@ -449,19 +519,23 @@ async def analyze_all_images(image_list: List[dict]) -> List[dict]:
             res["msg_link"] = image_list[i].get("link", "")
             res["msg_id"]   = image_list[i].get("msg_id", 0)
             illegal_images.append(res)
+
     return illegal_images
 
 
 async def analyze_illegality(messages: List[str], ch_info: dict) -> dict:
+    # Truncate each message to 300 chars to stay under token limit
     trimmed = [m[:300] for m in messages[:12]]
-    indexed_text = "\n---\n".join(f"[{i}] {msg}" for i, msg in enumerate(trimmed))
+    indexed_text = "\n---\n".join(
+        f"[{i}] {msg}" for i, msg in enumerate(trimmed)
+    )
     if len(indexed_text) > 3000:
         indexed_text = indexed_text[:3000] + "\n...(truncated)"
 
     sys_prompt = (
         "You are a senior legal analyst specialised in cybercrime, digital content law, "
         "and Telegram's Terms of Service. Analyse the provided Telegram channel/group "
-        "content strictly and return ONLY valid JSON — no markdown, no extra text.\n\n"
+        "content strictly and return ONLY valid JSON - no markdown, no extra text.\n\n"
         "JSON schema:\n"
         "{\n"
         '  "is_illegal": true | false,\n'
@@ -476,21 +550,30 @@ async def analyze_illegality(messages: List[str], ch_info: dict) -> dict:
         '  "illegal_message_indices": [int],\n'
         '  "report_description": "string"\n'
         "}\n\n"
-        "IMPORTANT — telegram_report_category MUST be exactly one of these keys:\n"
+        "IMPORTANT - telegram_report_category MUST be exactly one of these keys:\n"
         f"{_REPORT_TREE_FOR_PROMPT}\n\n"
-        "telegram_report_subcategory: one of the sub-options for the chosen category, "
-        "or empty string '' if none.\n"
-        "illegal_message_indices: 0-based indices of illegal messages, [] if none.\n"
-        "report_description: concise 2-3 sentence paste-ready description, '' if legal."
+        "telegram_report_subcategory:\n"
+        "  Must be one of the sub-options listed above for the chosen category.\n"
+        "  Set to empty string '' if the category has no sub-options.\n\n"
+        "illegal_message_indices:\n"
+        "  Array of 0-based integer indices of messages that contain illegal content.\n"
+        "  Empty [] if none.\n\n"
+        "report_description:\n"
+        "  A concise 2-3 sentence description of SPECIFIC violations found, "
+        "  ready to paste into Telegram's in-app report form.\n"
+        "  Empty string '' if is_illegal is false."
     )
+
     user_msg = (
         f"Channel Info:\n{json.dumps(ch_info, indent=2)}\n\n"
         f"Messages (0-based index in brackets):\n{indexed_text}\n\n"
         "Determine legality. Return ONLY the JSON object."
     )
+
     raw = await call_ai([{"role": "user", "content": user_msg}], sys_prompt)
+
     try:
-        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:
             result = json.loads(match.group())
             result.setdefault("illegal_message_indices", [])
@@ -499,24 +582,44 @@ async def analyze_illegality(messages: List[str], ch_info: dict) -> dict:
             return result
     except Exception:
         logger.warning("analyze_illegality: JSON parse failed")
+
     return {
-        "is_illegal": False, "confidence": "LOW", "violations": [], "severity": "LOW",
-        "applicable_laws": [], "summary": raw, "detailed_reason": raw,
-        "telegram_report_category": "Other", "telegram_report_subcategory": "",
-        "illegal_message_indices": [], "report_description": "",
+        "is_illegal":                  False,
+        "confidence":                  "LOW",
+        "violations":                  [],
+        "severity":                    "LOW",
+        "applicable_laws":             [],
+        "summary":                     raw,
+        "detailed_reason":             raw,
+        "telegram_report_category":    "Other",
+        "telegram_report_subcategory": "",
+        "illegal_message_indices":     [],
+        "report_description":          "",
     }
 
 
-async def generate_legal_email(ch_info: dict, analysis: dict, reporter_email: str,
-                               illegal_links: List[str]) -> str:
+async def generate_legal_email(
+    ch_info: dict,
+    analysis: dict,
+    reporter_email: str,
+    illegal_links: List[str],
+) -> str:
     links_block = ""
     if illegal_links:
-        links_block = ("\n\nDirect Evidence Links (Illegal Messages Only):\n"
-                       + "\n".join(f"  • {lnk}" for lnk in illegal_links[:10]))
+        links_block = (
+            "\n\nDirect Evidence Links (Illegal Messages Only):\n"
+            + "\n".join(f"  • {lnk}" for lnk in illegal_links[:10])
+        )
+
+    # NOTE: email kept SHORT/MEDIUM on purpose - very long complaint
+    # emails frequently land in spam folders.
     sys_prompt = (
         "You are a senior cyber-law attorney. Write a formal, professional complaint "
-        "email to Telegram's abuse team. Keep it SHORT to MEDIUM (150-250 words body) "
-        "— overly long emails get flagged as spam. Be legally precise but compact."
+        "email to Telegram's abuse team. IMPORTANT: keep the email SHORT to MEDIUM "
+        "length (roughly 150-250 words in the body) - overly long emails get flagged "
+        "as spam and ignored. Be legally precise but compact: one short intro line, "
+        "the key violation facts, 1-3 cited laws max, the evidence links, and a clear "
+        "single request for action. No filler, no repetition."
     )
     user_msg = (
         f"Reporter Email : {reporter_email}\n"
@@ -527,27 +630,31 @@ async def generate_legal_email(ch_info: dict, analysis: dict, reporter_email: st
         "Write a complete but SHORT/MEDIUM email:\n"
         "• To: abuse@telegram.org\n"
         "• CC: relevant law-enforcement only if CRITICAL violations\n"
-        "• Short specific subject line\n"
-        "• Compact formal body citing 1-3 most relevant laws\n"
+        "• Subject line (short, specific)\n"
+        "• Compact formal body citing the most relevant laws (1-3 max)\n"
         "• The direct illegal message evidence links\n"
         "• One clear request: channel removal / account suspension\n"
         "• Closing with reporter contact: " + reporter_email + "\n"
-        "Then a very short 'Supplementary Report Note' (2-3 lines) for the in-app form."
+        "Then add a very short 'Supplementary Report Note' (2-3 lines max) "
+        "the reporter can paste into Telegram's in-app report form."
     )
     return await call_ai([{"role": "user", "content": user_msg}], sys_prompt)
 
 
 async def generate_send_targets(analysis: dict, ch_info: dict) -> str:
+    """AI returns a line-by-line list of the most suitable emails to send the report to."""
     sys_prompt = (
         "You are a cyber-law expert. Based on the violation analysis, give a "
-        "line-by-line list of the MOST SUITABLE email addresses for this report. Rules:\n"
-        "• One email per line: <email> — <why, 5-8 words>\n"
+        "line-by-line list of the MOST SUITABLE email addresses where this report "
+        "should be sent. Rules:\n"
+        "• One email per line, format: <email> — <why>\n"
         "• Always include abuse@telegram.org first\n"
         "• Include dmca@telegram.org if copyright is involved\n"
-        "• Include child-abuse hotlines (e.g. report@ncmec.org) if child abuse involved\n"
-        "• Include national cyber-crime reporting emails if severity CRITICAL/HIGH\n"
-        "• Include data-protection authority email if personal data violation\n"
-        "• Max 8 lines. Plain text only. Only REAL official addresses."
+        "• Include child-abuse hotlines (e.g. CyberTipline at NCMEC) if child abuse is involved\n"
+        "• Include relevant national cyber-crime reporting portals if severity is CRITICAL/HIGH\n"
+        "• Include GDPR/data-protection authority if personal data violation\n"
+        "• Max 8 lines total. Plain text only, no markdown.\n"
+        "• Only give REAL, well-known official addresses - never invent emails."
     )
     user_msg = (
         f"Violations: {json.dumps(analysis.get('violations', []))}\n"
@@ -555,10 +662,10 @@ async def generate_send_targets(analysis: dict, ch_info: dict) -> str:
         f"Category: {analysis.get('telegram_report_category', 'Other')} / "
         f"{analysis.get('telegram_report_subcategory', '')}\n"
         f"Channel type: {ch_info.get('type', 'unknown')}\n\n"
-        "Give the line-by-line list of suitable emails."
+        "Give the line-by-line list of suitable emails to send the report to."
     )
     return await call_ai([{"role": "user", "content": user_msg}], sys_prompt)
-  
+
 # ══════════════════════════════════════════════════════════
 # USERBOT (TELETHON) MODULE
 # ══════════════════════════════════════════════════════════
@@ -607,12 +714,21 @@ def _build_msg_link(entity, msg_id: int) -> str:
     return f"https://t.me/c/{cid}/{msg_id}"
 
 
-async def ub_join_and_fetch(link: str, start_msg_id: int = 0):
+async def ub_join_and_fetch(
+    link: str,
+    start_msg_id: int = 0,
+) -> Tuple[object, dict, List[str], List[str], List[dict]]:
+    """
+    Returns: (entity, ch_info, messages, msg_links, image_list)
+    image_list: [{"b64": str, "caption": str, "msg_id": int, "link": str}]
+    If start_msg_id > 0, fetches messages FROM that ID going forward (newer).
+    """
     if not userbot_client or not await userbot_client.is_user_authorized():
         raise RuntimeError("No account linked. Add account first.")
 
     entity = None
 
+    # Join logic
     if "t.me/+" in link or "t.me/joinchat/" in link:
         if "t.me/+" in link:
             invite_hash = link.split("t.me/+")[-1].strip("/")
@@ -661,15 +777,20 @@ async def ub_join_and_fetch(link: str, start_msg_id: int = 0):
     try:
         iter_kwargs = {"limit": 40}
         if start_msg_id > 0:
-            iter_kwargs["min_id"] = start_msg_id - 1
+            iter_kwargs["min_id"] = start_msg_id - 1  # fetch msg_id and newer
+
         async for msg in userbot_client.iter_messages(entity, **iter_kwargs):
             msg_link = _build_msg_link(entity, msg.id)
+
+            # Text messages
             if msg.text:
                 messages.append(msg.text)
                 msg_links.append(msg_link)
+
+            # Photo messages -> download for vision AI
             if isinstance(msg.media, MessageMediaPhoto) and images_downloaded < MAX_IMAGES:
                 try:
-                    img_bytes = await userbot_client.download_media(msg.media, file=bytes)
+                    img_bytes = await userbot_client.download_media(msg, file=bytes)
                     if img_bytes:
                         image_list.append({
                             "b64":     base64.b64encode(img_bytes).decode("utf-8"),
@@ -678,18 +799,17 @@ async def ub_join_and_fetch(link: str, start_msg_id: int = 0):
                             "link":    msg_link,
                         })
                         images_downloaded += 1
-                except Exception as ex:
-                    logger.warning(f"Photo download error: {ex}")
+                except Exception as dl_ex:
+                    logger.warning(f"Image download failed (msg {msg.id}): {dl_ex}")
+
     except Exception as ex:
-        logger.warning(f"Message fetch error: {ex}")
+        logger.exception("iter_messages failed")
+        raise RuntimeError(f"Could not fetch messages: {ex}")
 
     return entity, ch_info, messages, msg_links, image_list
 
-# ══════════════════════════════════════════════════════════
-# TARGET RESOLVER
-# ══════════════════════════════════════════════════════════
 
-async def _resolve_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _resolve_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Tuple[Optional[int], Optional[str], Optional[str]]:
     if update.message.reply_to_message:
         sender = update.message.reply_to_message.from_user
         if sender:
@@ -699,6 +819,7 @@ async def _resolve_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
         return None, None, None
+
     arg = args[0].strip()
 
     if arg.lstrip("-").isdigit():
@@ -720,7 +841,11 @@ async def _resolve_target(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if userbot_client and await userbot_client.is_user_authorized():
         try:
             ent = await userbot_client.get_entity(uname)
-            return ent.id, getattr(ent, "username", None), getattr(ent, "first_name", None)
+            return (
+                ent.id,
+                getattr(ent, "username", None),
+                getattr(ent, "first_name", None),
+            )
         except Exception as ex:
             logger.warning(f"Username resolve failed for @{uname}: {ex}")
 
@@ -734,33 +859,45 @@ async def cmd_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
         await update.message.reply_text("🔒 Owner only command.")
         return
+
     uid, username, name = await _resolve_target(update, context)
+
     if uid is None and username is None:
         await update.message.reply_text(
-            "❌ Usage:\n• /sudo @username\n• /sudo user_id\n"
+            "❌ Usage:\n"
+            "• /sudo @username\n"
+            "• /sudo user_id\n"
             "• Reply to user's message and send /sudo",
             parse_mode=ParseMode.HTML,
         )
         return
+
     if uid is None:
         await update.message.reply_text(
             f"❌ Could not resolve @{e(username)} to a user ID.\n\n"
-            "Tips:\n• Use numeric ID: /sudo 123456789\n"
+            "Tips:\n"
+            "• Use numeric ID instead: /sudo 123456789\n"
             "• OR reply to their message and send /sudo\n"
             "• Username works only if they've interacted with the bot",
             parse_mode=ParseMode.HTML,
         )
         return
+
     if uid == OWNER_ID:
         await update.message.reply_text("⚠️ You are the owner — no sudo needed for yourself.")
         return
+
     added     = add_sudo_user(uid, username, name)
     uname_str = f"@{e(username)}" if username else f"{uid}"
     name_str  = e(name) if name else "Unknown"
+
     if added:
         await update.message.reply_text(
-            f"✅ Sudo Access Granted\n\n👤 User : {uname_str}\n📛 Name : {name_str}\n"
-            f"🆔 ID   : {uid}\n\nThey can now use this bot.",
+            f"✅ Sudo Access Granted\n\n"
+            f"👤 User : {uname_str}\n"
+            f"📛 Name : {name_str}\n"
+            f"🆔 ID   : {uid}\n\n"
+            f"They can now use this bot.",
             parse_mode=ParseMode.HTML,
         )
     else:
@@ -774,14 +911,19 @@ async def cmd_rmsudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
         await update.message.reply_text("🔒 Owner only command.")
         return
+
     uid, username, _ = await _resolve_target(update, context)
+
     if uid is None and username is None:
         await update.message.reply_text(
-            "❌ Usage:\n• /rmsudo @username\n• /rmsudo user_id\n"
+            "❌ Usage:\n"
+            "• /rmsudo @username\n"
+            "• /rmsudo user_id\n"
             "• Reply to user's message and send /rmsudo",
             parse_mode=ParseMode.HTML,
         )
         return
+
     if uid is None:
         await update.message.reply_text(
             f"❌ Could not resolve @{e(username)} to a user ID.\n"
@@ -789,11 +931,15 @@ async def cmd_rmsudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
         return
+
     removed   = remove_sudo_user(uid)
     uname_str = f"@{e(username)}" if username else f"{uid}"
+
     if removed:
         await update.message.reply_text(
-            f"✅ Sudo Access Removed\n\n👤 {uname_str} (ID: {uid})\nThey can no longer use this bot.",
+            f"✅ Sudo Access Removed\n\n"
+            f"👤 {uname_str} (ID: {uid})\n"
+            f"They can no longer use this bot.",
             parse_mode=ParseMode.HTML,
         )
     else:
@@ -807,6 +953,7 @@ async def cmd_sudolist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_owner(update.effective_user.id):
         await update.message.reply_text("🔒 Owner only command.")
         return
+
     users = load_sudo_users()
     if not users:
         await update.message.reply_text(
@@ -814,34 +961,21 @@ async def cmd_sudolist(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
         return
+
     lines = []
     for i, u in enumerate(users, 1):
         uname = f"@{e(u['username'])}" if u.get("username") else "—"
         name  = e(u["name"]) if u.get("name") else "Unknown"
         lines.append(f"{i}. {uname}  |  📛 {name}\n   🆔 {u['id']}")
-    text = (f"👥 Sudo Users ({len(users)})\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            + "\n\n".join(lines)
-            + "\n\n━━━━━━━━━━━━━━━━━━━━━━\nUse /rmsudo to revoke access.")
+
+    text = (
+        f"👥 Sudo Users ({len(users)})\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        + "\n\n".join(lines)
+        + "\n\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Use /rmsudo to revoke access."
+    )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-
-# ══════════════════════════════════════════════════════════
-# DEBUG: log EVERY update so clicks are always visible in logs
-# ══════════════════════════════════════════════════════════
-
-async def log_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        if update.callback_query:
-            logger.info(
-                f"UPDATE | callback_query | user={update.callback_query.from_user.id} "
-                f"| data={update.callback_query.data}"
-            )
-        elif update.message:
-            logger.info(
-                f"UPDATE | message | user={update.message.from_user.id if update.message.from_user else '?'} "
-                f"| text={str(update.message.text)[:60]}"
-            )
-    except Exception:
-        pass
 
 # ══════════════════════════════════════════════════════════
 # BOT HANDLERS
@@ -870,20 +1004,24 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "Choose an option:"
     )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard(),
+    )
     return MAIN_MENU
 
 
-# Universal callback router — answers FIRST, always.
 async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
 
+    # Always answer the callback first (removes the "loading" spinner)
     try:
-        await query.answer()   # removes the loading spinner instantly
+        await query.answer()
     except Exception as ans_ex:
         logger.warning(f"query.answer() failed: {ans_ex}")
 
-    data = query.data
+    data = query.data or ""
     logger.info(f"CALLBACK | user={query.from_user.id} | data={data}")
 
     try:
@@ -900,7 +1038,8 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             label  = "Account Linked" if linked else "No Account"
             await safe_edit(
                 query,
-                f"🛡️ Illegal Content Detector Bot\n\n🔐 Status: {icon} {label}\n\nChoose an option:",
+                f"🛡️ Illegal Content Detector Bot\n\n"
+                f"🔐 Status: {icon} {label}\n\nChoose an option:",
                 main_keyboard(),
             )
             return MAIN_MENU
@@ -919,7 +1058,8 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not (userbot_client and await userbot_client.is_user_authorized()):
                 await safe_edit(
                     query,
-                    "❌ No account linked!\n\nAdd an account first using '➕ Add / Change Account'.",
+                    "❌ No account linked!\n\n"
+                    "Add an account first using '➕ Add / Change Account'.",
                     back_keyboard(),
                 )
                 return MAIN_MENU
@@ -954,11 +1094,16 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 fullname = e(me.first_name) + (" " + e(me.last_name) if me.last_name else "")
                 txt = (
                     "✅ Account Linked\n\n"
-                    f"👤 Name  : {fullname}\n📱 Phone : {e(me.phone)}\n"
-                    f"🆔 ID    : {me.id}\n🔗 User  : {uname}"
+                    f"👤 Name  : {fullname}\n"
+                    f"📱 Phone : {e(me.phone)}\n"
+                    f"🆔 ID    : {me.id}\n"
+                    f"🔗 User  : {uname}"
                 )
             else:
-                txt = "❌ No account linked.\nTap '➕ Add / Change Account' to add one."
+                txt = (
+                    "❌ No account linked.\n"
+                    "Tap '➕ Add / Change Account' to add one."
+                )
             await safe_edit(query, txt, back_keyboard())
             return MAIN_MENU
 
@@ -977,7 +1122,8 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not analysis:
                 await safe_edit(
                     query,
-                    "⚠️ No recent analysis found.\nVerify a channel first, then generate the report.",
+                    "⚠️ No recent analysis found.\n"
+                    "Verify a channel first, then generate the report.",
                     back_keyboard(),
                 )
                 return MAIN_MENU
@@ -989,8 +1135,10 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]])
             await safe_edit(
                 query,
-                "📮 Where to Send Your Report\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"{e(targets)}\n\n━━━━━━━━━━━━━━━━━━━━━━\n"
+                "📮 Where to Send Your Report\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"{e(targets)}\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━\n"
                 "💡 Send the generated email to the addresses above, "
                 "most suitable ones are listed first.",
                 kb,
@@ -1005,16 +1153,13 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 query,
                 "🔍 Verify Another Group / Channel\n\n"
                 "Send the link or @username:\n\n"
-                "• Private: https://t.me/+xxxxxxxx\n• Public:  @username\n\n"
+                "• Private: https://t.me/+xxxxxxxx\n"
+                "• Public:  @username\n\n"
                 "Type /cancel to abort.",
             )
             return VERIFY_LINK
 
         logger.warning(f"Unhandled callback_data: {data}")
-        try:
-            await query.answer("Unknown button — opening menu…", show_alert=False)
-        except Exception:
-            pass
         return MAIN_MENU
 
     except Exception:
@@ -1022,7 +1167,8 @@ async def cb_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await safe_edit(
                 query,
-                "⚠️ Something went wrong while processing that button.\nPlease try again from the menu.",
+                "⚠️ Something went wrong while processing that button.\n"
+                "Please try again from the menu.",
                 main_keyboard(),
             )
         except Exception:
@@ -1034,21 +1180,27 @@ async def hdl_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone = update.message.text.strip()
     if not phone.startswith("+"):
         await update.message.reply_text(
-            "❌ Include country code, e.g. +917xxxxxxxxx", parse_mode=ParseMode.HTML,
+            "❌ Include country code, e.g. +917xxxxxxxxx",
+            parse_mode=ParseMode.HTML,
         )
         return ADD_PHONE
+
     msg = await update.message.reply_text("📤 Sending OTP…")
     try:
         code_hash = await ub_send_code(phone)
         context.user_data["phone"]     = phone
         context.user_data["code_hash"] = code_hash
         await safe_edit_with_fallback(
-            msg, f"✅ OTP sent to {e(phone)}\n\nEnter the code you received (spaces OK):",
+            msg,
+            f"✅ OTP sent to {e(phone)}\n\n"
+            "Enter the code you received (spaces OK):",
         )
         return ADD_OTP
     except Exception as ex:
         logger.exception("ub_send_code failed")
-        await safe_edit_with_fallback(msg, f"❌ Failed: {e(str(ex))}\n\nTry again or /cancel")
+        await safe_edit_with_fallback(
+            msg, f"❌ Failed: {e(str(ex))}\n\nTry again or /cancel",
+        )
         return ADD_PHONE
 
 
@@ -1057,6 +1209,7 @@ async def hdl_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone     = context.user_data.get("phone")
     code_hash = context.user_data.get("code_hash")
     msg       = await update.message.reply_text("⏳ Verifying OTP…")
+
     try:
         await ub_sign_in(phone, code, code_hash)
         me       = await userbot_client.get_me()
@@ -1064,19 +1217,31 @@ async def hdl_otp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uname    = f"@{e(me.username)}" if me.username else "N/A"
         await safe_edit_with_fallback(
             msg,
-            f"✅ Account linked!\n\n👤 {fullname}\n📱 {e(me.phone)}\n🆔 {me.id}\n🔗 {uname}",
+            f"✅ Account linked!\n\n"
+            f"👤 {fullname}\n"
+            f"📱 {e(me.phone)}\n"
+            f"🆔 {me.id}\n"
+            f"🔗 {uname}",
             main_keyboard(),
         )
         return MAIN_MENU
+
     except errors.SessionPasswordNeededError:
-        await safe_edit_with_fallback(msg, "🔐 2FA Required\n\nEnter your Two-Factor Authentication password:")
+        await safe_edit_with_fallback(
+            msg,
+            "🔐 2FA Required\n\nEnter your Two-Factor Authentication password:",
+        )
         return ADD_2FA
+
     except (errors.PhoneCodeInvalidError, errors.PhoneCodeExpiredError):
         await safe_edit_with_fallback(msg, "❌ Wrong or expired OTP. Try again:")
         return ADD_OTP
+
     except Exception as ex:
         logger.exception("ub_sign_in failed")
-        await safe_edit_with_fallback(msg, f"❌ Error: {e(str(ex))}\n\nTry again or /cancel")
+        await safe_edit_with_fallback(
+            msg, f"❌ Error: {e(str(ex))}\n\nTry again or /cancel",
+        )
         return ADD_OTP
 
 
@@ -1089,7 +1254,10 @@ async def hdl_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uname = f"@{e(me.username)}" if me.username else "N/A"
         await safe_edit_with_fallback(
             msg,
-            f"✅ Account linked!\n\n👤 {e(me.first_name)}\n📱 {e(me.phone)}\n🔗 {uname}",
+            f"✅ Account linked!\n\n"
+            f"👤 {e(me.first_name)}\n"
+            f"📱 {e(me.phone)}\n"
+            f"🔗 {uname}",
             main_keyboard(),
         )
         return MAIN_MENU
@@ -1098,7 +1266,9 @@ async def hdl_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ADD_2FA
     except Exception as ex:
         logger.exception("ub_sign_in_2fa failed")
-        await safe_edit_with_fallback(msg, f"❌ Error: {e(str(ex))}\n\nTry again or /cancel")
+        await safe_edit_with_fallback(
+            msg, f"❌ Error: {e(str(ex))}\n\nTry again or /cancel",
+        )
         return ADD_2FA
 
 # ══════════════════════════════════════════════════════════
@@ -1108,40 +1278,53 @@ async def hdl_2fa(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def hdl_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     link = update.message.text.strip()
 
+    # Detect specific message link (e.g. t.me/channel/123) -> fetch from that point
     start_msg_id = 0
-    msg_id_match = re.search(r't\.me/(?:c/\d+|\w+)/(\d+)', link)
+    msg_id_match = re.search(r"t\.me/(?:c/\d+|\w+)/(\d+)", link)
     if msg_id_match:
         start_msg_id = int(msg_id_match.group(1))
-        link = re.sub(r'/(\d+)$', '', link).strip()
+        link = re.sub(r"/(\d+)$", "", link).strip()
 
-    mode_note = (f"⏳ [1/5] Joining & fetching from message #{start_msg_id} onwards…"
-                 if start_msg_id else "⏳ [1/5] Joining group/channel…")
+    mode_note = (
+        f"⏳ [1/5] Joining &amp; fetching from message #{start_msg_id} onwards…"
+        if start_msg_id else
+        "⏳ [1/5] Joining group/channel…"
+    )
     progress = await update.message.reply_text(
-        f"🔍 Analysis Started…\n\n{mode_note}", parse_mode=ParseMode.HTML,
+        f"🔍 Analysis Started…\n\n{mode_note}",
+        parse_mode=ParseMode.HTML,
     )
 
+    # Step 1: Join & Fetch
     try:
         entity, ch_info, messages, msg_links, image_list = await ub_join_and_fetch(link, start_msg_id)
     except Exception as ex:
         logger.exception("ub_join_and_fetch failed")
-        await safe_edit_with_fallback(progress, f"❌ Error: {e(str(ex))}\n\nSend another link or /cancel")
+        await safe_edit_with_fallback(
+            progress,
+            f"❌ Error: {e(str(ex))}\n\nSend another link or /cancel",
+        )
         return VERIFY_LINK
 
     img_note = f" + {len(image_list)} photo(s)" if image_list else ""
     await safe_edit_with_fallback(
         progress,
-        f"🔍 Analysis In Progress…\n\n✅ [1/5] Joined: {e(ch_info['title'])}\n"
+        f"🔍 Analysis In Progress…\n\n"
+        f"✅ [1/5] Joined: {e(ch_info['title'])}\n"
         f"⏳ [2/5] Fetched {len(messages)} messages{img_note} — running AI…",
     )
 
+    # Step 2 & 3: Text + Image analysis in parallel
     text_task  = asyncio.create_task(analyze_illegality(messages, ch_info))
     image_task = asyncio.create_task(analyze_all_images(image_list)) if image_list else None
+
     analysis = await text_task
     illegal_image_results: List[dict] = await image_task if image_task else []
 
     await safe_edit_with_fallback(
         progress,
-        f"🔍 Analysis In Progress…\n\n✅ [1/5] Joined: {e(ch_info['title'])}\n"
+        f"🔍 Analysis In Progress…\n\n"
+        f"✅ [1/5] Joined: {e(ch_info['title'])}\n"
         f"✅ [2/5] {len(messages)} messages fetched{img_note}\n"
         f"✅ [3/5] Text AI analysis done\n"
         f"✅ [4/5] Image AI analysis done ({len(illegal_image_results)} flagged)\n"
@@ -1154,28 +1337,34 @@ async def hdl_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["last_msg_links"]       = msg_links
     context.user_data["illegal_image_results"] = illegal_image_results
 
+    # Build illegal text message links
     illegal_indices = analysis.get("illegal_message_indices", [])
-    illegal_links   = [msg_links[i] for i in illegal_indices
-                       if isinstance(i, int) and 0 <= i < len(msg_links)]
+    illegal_links   = [
+        msg_links[i]
+        for i in illegal_indices
+        if isinstance(i, int) and 0 <= i < len(msg_links)
+    ]
     context.user_data["illegal_links"] = illegal_links
 
-    is_illegal   = analysis.get("is_illegal", False)
-    has_img_viol = bool(illegal_image_results)
-
-    if is_illegal or has_img_viol:
-        sev = analysis.get("severity", "MEDIUM")
-        sev_icon = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}.get(sev, "🟡")
-
+    if analysis.get("is_illegal") or illegal_image_results:
+        sev        = analysis.get("severity", "HIGH")
+        sev_icon   = {"CRITICAL": "🚨", "HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🟡"}.get(sev, "🔴")
         violations = analysis.get("violations", [])
-        violations_txt = ("\n".join(f"  • {e(v)}" for v in violations)
-                          if violations else "  • See image violations below")
-        laws     = analysis.get("applicable_laws", [])
-        laws_txt = "\n".join(f"  • {e(l)}" for l in laws) if laws else "  • N/A"
+        laws       = analysis.get("applicable_laws", [])
 
-        links_section = ""
+        violations_txt = "\n".join(f"• {e(v)}" for v in violations) if violations else "• See detailed reason"
+        laws_txt       = "\n".join(f"• {e(l)}" for l in laws)       if laws       else "• See detailed reason"
+
         if illegal_links:
-            links_section = ("\n\n🔗 Illegal Evidence Links:\n" + "\n".join(
-                f'  {i+1}. <a href="{e(lnk)}">{e(lnk)}</a>' for i, lnk in enumerate(illegal_links)))
+            links_section = (
+                "\n\n🔗 Illegal Message Links (Direct Evidence):\n"
+                + "\n".join(
+                    f'  {i + 1}. <a href="{e(lnk)}">View Message {i + 1}</a>'
+                    for i, lnk in enumerate(illegal_links)
+                )
+            )
+        else:
+            links_section = ""
 
         img_section = ""
         if illegal_image_results:
@@ -1186,16 +1375,20 @@ async def hdl_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lnk      = r.get("msg_link", "")
                 link_str = f'<a href="{e(lnk)}">View Photo</a>' if lnk else "Private"
                 img_lines.append(f"  📸 {link_str} — {e(viols)} [{conf}]")
-            img_section = (f"\n\n🖼️ Illegal Photos Detected ({len(illegal_image_results)}):\n"
-                           + "\n".join(img_lines))
+            img_section = (
+                f"\n\n🖼️ Illegal Photos Detected ({len(illegal_image_results)}):\n"
+                + "\n".join(img_lines)
+            )
 
         report_desc  = analysis.get("report_description", "").strip()
-        desc_section = (f"\n\n📝 Suggested Report Description (paste this):\n{e(report_desc)}"
-                        if report_desc else "")
+        desc_section = (
+            f"\n\n📝 Suggested Report Description (paste this):\n{e(report_desc)}"
+        ) if report_desc else ""
 
         tg_cat    = analysis.get("telegram_report_category", "Other")
         tg_subcat = analysis.get("telegram_report_subcategory", "")
 
+        # If only image violations exist, pick best category from image results
         if not analysis.get("is_illegal") and illegal_image_results:
             img_viols  = [v for r in illegal_image_results for v in r.get("violations", [])]
             viol_lower = " ".join(img_viols).lower()
@@ -1204,7 +1397,7 @@ async def hdl_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif any(x in viol_lower for x in ["porn", "sexual", "nude"]):
                 tg_cat, tg_subcat = "Illegal adult content", "Pornography"
             elif any(x in viol_lower for x in ["weapon", "gun", "drug"]):
-                tg_cat    = "Illegal goods and services"
+                tg_cat = "Illegal goods and services"
                 tg_subcat = "Weapons" if ("weapon" in viol_lower or "gun" in viol_lower) else "Drugs"
             elif any(x in viol_lower for x in ["violence", "gore", "graphic"]):
                 tg_cat, tg_subcat = "Violence", "Graphic or disturbing content"
@@ -1212,24 +1405,31 @@ async def hdl_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 tg_cat, tg_subcat = "Other", ""
 
         report_instructions = format_report_instructions(tg_cat, tg_subcat, report_desc)
+
         ch_username = ch_info.get("username")
         uname_line  = f"• Username : @{e(ch_username)}\n" if ch_username else ""
 
         report = (
-            f"{sev_icon} ILLEGAL CONTENT DETECTED {sev_icon}\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{sev_icon} ILLEGAL CONTENT DETECTED {sev_icon}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📌 Channel / Group Info\n"
-            f"• Title   : {e(ch_info.get('title', 'N/A'))}\n{uname_line}"
-            f"• Type    : {e(ch_info.get('type', 'N/A').upper())}\n"
+            f"• Title   : {e(ch_info.get('title', 'N/A'))}\n"
+            f"{uname_line}"
+            f"• Type    : {e(str(ch_info.get('type', 'N/A')).upper())}\n"
             f"• Members : {e(ch_info.get('members_count', 'N/A'))}\n"
             f"• Link    : {e(link)}\n\n"
             f"⚖️ Violations Detected\n{violations_txt}\n\n"
             f"📜 Applicable Laws\n{laws_txt}\n\n"
-            f"🎯 Severity: {e(analysis.get('severity','?'))}  |  "
-            f"Confidence: {e(analysis.get('confidence','?'))}\n\n"
-            f"📋 Detailed Reason\n{e(analysis.get('detailed_reason','N/A'))}"
-            f"{img_section}{links_section}\n\n━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{report_instructions}{desc_section}\n\n"
-            f"🌐 Web report : https://t.me/abuse\n📧 Email      : abuse@telegram.org\n"
+            f"🎯 Severity: {e(analysis.get('severity', '?'))}  |  "
+            f"Confidence: {e(analysis.get('confidence', '?'))}\n\n"
+            f"📋 Detailed Reason\n{e(analysis.get('detailed_reason', 'N/A'))}"
+            f"{img_section}"
+            f"{links_section}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{report_instructions}"
+            f"{desc_section}\n\n"
+            f"🌐 Web report : https://t.me/abuse\n"
+            f"📧 Email      : abuse@telegram.org\n"
             f"━━━━━━━━━━━━━━━━━━━━━━"
         )
 
@@ -1242,25 +1442,33 @@ async def hdl_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
 
         if len(report) > 4000:
-            parts = [report[i:i+4000] for i in range(0, len(report), 4000)]
+            parts = [report[i:i + 4000] for i in range(0, len(report), 4000)]
             for i, part in enumerate(parts):
                 if i == 0:
                     await safe_edit_with_fallback(progress, part)
                 elif i == len(parts) - 1:
-                    await update.message.reply_text(part, parse_mode=ParseMode.HTML, reply_markup=kb)
+                    await update.message.reply_text(
+                        part, parse_mode=ParseMode.HTML, reply_markup=kb
+                    )
                 else:
                     await update.message.reply_text(part, parse_mode=ParseMode.HTML)
         else:
             await safe_edit_with_fallback(progress, report, kb)
+
+    # ── CLEAN REPORT ──
     else:
-        img_clean_note = (f"\n🖼️ Photos scanned  : {len(image_list)} (0 flagged)"
-                          if image_list else "")
+        img_clean_note = (
+            f"\n🖼️ Photos scanned  : {len(image_list)} (0 flagged)"
+            if image_list else ""
+        )
         clean_report = (
-            f"✅ Analysis Complete — No Illegal Content Found\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📌 {e(ch_info.get('title','Unknown'))}\n"
+            f"✅ Analysis Complete — No Illegal Content Found\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📌 {e(ch_info.get('title', 'Unknown'))}\n"
             f"📊 Messages analysed : {len(messages)}{img_clean_note}\n"
-            f"🎯 Confidence        : {e(analysis.get('confidence','N/A'))}\n\n"
-            f"📝 AI Summary\n{e(analysis.get('summary','Content appears within legal boundaries.'))}\n\n"
+            f"🎯 Confidence        : {e(analysis.get('confidence', 'N/A'))}\n\n"
+            f"📝 AI Summary\n"
+            f"{e(analysis.get('summary', 'Content appears within legal boundaries.'))}\n\n"
             f"⚠️ This is an AI-based analysis. Human judgement is always recommended.\n"
             f"━━━━━━━━━━━━━━━━━━━━━━"
         )
@@ -1294,8 +1502,11 @@ LEGAL_SYSTEM = (
 
 async def hdl_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.text.strip()
+
     if msg.lower() in ("/back", "/cancel", "/menu"):
-        await update.message.reply_text("↩️ Back to main menu.", reply_markup=main_keyboard())
+        await update.message.reply_text(
+            "↩️ Back to main menu.", reply_markup=main_keyboard(),
+        )
         return MAIN_MENU
 
     history = context.user_data.get("chat_history", [])
@@ -1303,6 +1514,7 @@ async def hdl_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     thinking = await update.message.reply_text("🤖 Analysing…")
     response = await call_ai(history, LEGAL_SYSTEM)
+
     history.append({"role": "assistant", "content": response})
     context.user_data["chat_history"] = history[-30:]
 
@@ -1317,34 +1529,43 @@ async def hdl_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await split_send(update.message, e(response), kb)
     return CHAT_AI
 
-# ══════════════════════════════════════════════════════════
-# REPORT EMAIL
-# ══════════════════════════════════════════════════════════
 
 async def hdl_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reporter_email  = update.message.text.strip()
-    analysis        = context.user_data.get("last_analysis", {})
-    ch_info         = context.user_data.get("last_ch_info", {})
-    link            = context.user_data.get("last_link", "")
-    illegal_links   = context.user_data.get("illegal_links", [])
+    reporter_email = update.message.text.strip()
+    analysis       = context.user_data.get("last_analysis", {})
+    ch_info        = context.user_data.get("last_ch_info", {})
+    link           = context.user_data.get("last_link", "")
+    illegal_links  = context.user_data.get("illegal_links", [])
     ch_info["link"] = link
 
-    wait_msg   = await update.message.reply_text("⏳ Generating professional legal email…")
+    wait_msg = await update.message.reply_text("⏳ Generating professional legal email…")
+
     email_body = await generate_legal_email(ch_info, analysis, reporter_email, illegal_links)
 
-    header = "📧 Professional Legal Report Email\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    header = (
+        "📧 Professional Legal Report Email\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
     ev_block = ""
     if illegal_links:
-        ev_block = ("\n\n🔗 Illegal Message Evidence Links:\n" + "\n".join(
-            f'  {i+1}. <a href="{e(lnk)}">{e(lnk)}</a>' for i, lnk in enumerate(illegal_links[:10])) + "\n")
+        ev_block = (
+            "\n\n🔗 Illegal Message Evidence Links:\n"
+            + "\n".join(f"  {i + 1}. {e(lnk)}" for i, lnk in enumerate(illegal_links[:10]))
+            + "\n"
+        )
+
     footer = (
-        f"{ev_block}\n━━━━━━━━━━━━━━━━━━━━━━\n💡 Next Steps:\n"
-        "1. Copy &amp; send to abuse@telegram.org\n"
-        "2. Also report via in-app → ⋮ → Report\n"
-        "3. Keep a copy for your records\n"
-        "4. For CRITICAL cases, also report to local cyber-crime police\n\n"
-        "👇 Not sure where to send? Tap 'Where to Send' below."
+        f"{ev_block}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💡 Next Steps:\n"
+        f"1. Copy &amp; send to abuse@telegram.org\n"
+        f"2. Also report via in-app → ⋮ → Report\n"
+        f"3. Keep a copy for your records\n"
+        f"4. For CRITICAL cases, also report to local cyber-crime police\n\n"
+        f"👇 Not sure where to send? Tap 'Where to Send' below."
     )
+
     full = header + e(email_body) + footer
 
     kb = InlineKeyboardMarkup([
@@ -1363,7 +1584,9 @@ async def hdl_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("↩️ Cancelled. Back to main menu.", reply_markup=main_keyboard())
+    await update.message.reply_text(
+        "↩️ Cancelled. Back to main menu.", reply_markup=main_keyboard(),
+    )
     return MAIN_MENU
 
 # ══════════════════════════════════════════════════════════
@@ -1388,20 +1611,17 @@ def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN environment variable is missing.")
     if not API_ID or not API_HASH:
-        logger.warning("API_ID / API_HASH not set — userbot features will not work.")
+        logger.warning("API_ID / API_HASH not set - userbot features will not work.")
 
     logger.info("Initialising bot…")
 
     app = (
         Application.builder()
         .token(BOT_TOKEN)
-        .concurrent_updates(False)
+        .concurrent_updates(False)      # sequential updates, no ConversationHandler races
         .post_init(post_init)
         .build()
     )
-
-    # ── DEBUG: log every incoming update (group -1 = runs first) ──
-    app.add_handler(TypeHandler(Update, log_all_updates), group=-1)
 
     sudo_cmds = [
         CommandHandler("sudo",     cmd_sudo),
@@ -1409,17 +1629,12 @@ def main() -> None:
         CommandHandler("sudolist", cmd_sudolist),
     ]
 
-    # ── THE MAIN FIX ──────────────────────────────────────────────
-    # CallbackQueryHandler(cb_router) is now an ENTRY POINT and a
-    # FALLBACK too. So even if the conversation state was lost (bot
-    # restart, timeout, first-ever click), ANY inline-button click
-    # re-enters the conversation and gets handled. Before, entry
-    # was ONLY /start → clicks on menu buttons were silently dropped.
-    # ──────────────────────────────────────────────────────────────
     conv = ConversationHandler(
+        # KEY FIX: CallbackQueryHandler in entry_points so buttons keep
+        # working even after conversation_timeout expires (allow_reentry)
         entry_points=[
             CommandHandler("start", cmd_start),
-            CallbackQueryHandler(cb_router),   # ✅ FIX: buttons start conversations too
+            CallbackQueryHandler(cb_router),
         ],
         states={
             MAIN_MENU:    [CallbackQueryHandler(cb_router), *sudo_cmds],
@@ -1433,7 +1648,7 @@ def main() -> None:
         fallbacks=[
             CommandHandler("cancel", cmd_cancel),
             CommandHandler("start",  cmd_start),
-            CallbackQueryHandler(cb_router),   # ✅ FIX: never drop a callback
+            CallbackQueryHandler(cb_router),
             *sudo_cmds,
         ],
         allow_reentry=True,
@@ -1443,13 +1658,30 @@ def main() -> None:
 
     app.add_handler(conv)
 
+    # Global fallback: if for ANY reason the conversation did not catch a
+    # callback, this answers it so the button never stays dead.
+    async def global_cb_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        q = update.callback_query
+        if q:
+            try:
+                await q.answer()
+            except Exception:
+                pass
+            await cb_router(update, context)
+
+    app.add_handler(CallbackQueryHandler(global_cb_fallback), group=1)
+
     for handler in sudo_cmds:
         app.add_handler(handler, group=1)
 
     app.add_error_handler(error_handler)
 
     logger.info("Bot is running! Press Ctrl+C to stop.")
-    app.run_polling(drop_pending_updates=True)
+    # KEY FIX: allowed_updates ensures callback_query updates are received
+    app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES,
+    )
 
 
 if __name__ == "__main__":
